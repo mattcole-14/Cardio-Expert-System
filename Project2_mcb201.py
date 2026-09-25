@@ -261,65 +261,134 @@ def backward_chain(
 ) -> Tuple[float, List[str]]:
     """
     Backward-chain from a diagnosis goal to its supporting rules and premises.
+
+    Rule evaluation order:
+    1. Highest priority
+    2. Highest computed rule CF
+    3. Rule insertion order
+    4. Lexicographical rule ID
     """
     if visited is None:
         visited = set()
 
-    supporting_rules = sorted(
-        [rule for rule in RULES if rule.conclusion == goal],
-        key=lambda r: r.priority,
-        reverse=True,
-    )
+    matching_rules = [
+        (index, rule)
+        for index, rule in enumerate(RULES)
+        if rule.conclusion == goal
+    ]
 
-    if not supporting_rules:
+    if not matching_rules:
         return 0.0, [f"No rules support goal: {goal}"]
+
+    # Pre-evaluate each rule so its computed CF can be used
+    # as the second tie-breaking criterion.
+    evaluated_rules = []
+
+    for insertion_index, rule in matching_rules:
+        premise_cfs: List[float] = []
+        premise_trace: List[str] = []
+        rule_supported = True
+        failed_premise = ""
+
+        for premise in rule.premises:
+            premise_cf, trace = prove_premise(
+                premise,
+                facts,
+                visited | {goal}
+            )
+
+            premise_trace.extend("  " + line for line in trace)
+
+            if premise_cf <= 0.0:
+                rule_supported = False
+                failed_premise = premise
+                break
+
+            premise_cfs.append(premise_cf)
+
+        if rule_supported:
+            min_premise_cf = min(premise_cfs)
+            rule_cf = min_premise_cf * rule.strength
+        else:
+            min_premise_cf = 0.0
+            rule_cf = 0.0
+
+        evaluated_rules.append(
+            (
+                insertion_index,
+                rule,
+                rule_supported,
+                failed_premise,
+                premise_trace,
+                min_premise_cf,
+                rule_cf,
+            )
+        )
+
+    # Required tie-breaking:
+    # 1. Priority
+    # 2. Highest computed CF
+    # 3. Insertion order
+    # 4. Lexicographical rule ID
+    evaluated_rules.sort(
+        key=lambda item: (
+            -item[1].priority,
+            -item[6],
+            item[0],
+            item[1].rule_id,
+        )
+    )
 
     combined_cf = 0.0
     trace: List[str] = [f"\nGOAL: {goal}"]
 
-    for rule in supporting_rules:
+    for (
+        insertion_index,
+        rule,
+        rule_supported,
+        failed_premise,
+        premise_trace,
+        min_premise_cf,
+        rule_cf,
+    ) in evaluated_rules:
+
         trace.append(
             f"\nChecking {rule.rule_id} "
             f"(priority={rule.priority}, strength={rule.strength:.2f})"
         )
 
-        premise_cfs: List[float] = []
-        rule_supported = True
-
-        for premise in rule.premises:
-            premise_cf, premise_trace = prove_premise(premise, facts, visited | {goal})
-            trace.extend("  " + line for line in premise_trace)
-
-            if premise_cf <= 0.0:
-                rule_supported = False
-                trace.append(f"  {rule.rule_id} cannot fire: {premise} is not supported.")
-                break
-
-            premise_cfs.append(premise_cf)
+        trace.extend(premise_trace)
 
         if not rule_supported:
+            trace.append(
+                f"  {rule.rule_id} cannot fire: "
+                f"{failed_premise} is not supported."
+            )
             continue
-
-        min_premise_cf = min(premise_cfs)
-        rule_cf = min_premise_cf * rule.strength
 
         trace.append(
             f"  min(premise CFs) = {min_premise_cf:.3f}"
         )
+
         trace.append(
             f"  {rule.rule_id} conclusion CF = "
-            f"{min_premise_cf:.3f} x {rule.strength:.3f} = {rule_cf:.3f}"
+            f"{min_premise_cf:.3f} x "
+            f"{rule.strength:.3f} = "
+            f"{rule_cf:.3f}"
         )
 
         previous_cf = combined_cf
         combined_cf = combine_cf(combined_cf, rule_cf)
 
         if previous_cf == 0.0:
-            trace.append(f"  Combined CF = {combined_cf:.3f}")
+            trace.append(
+                f"  Combined CF = {combined_cf:.3f}"
+            )
         else:
             trace.append(
                 f"  Combined CF = {previous_cf:.3f} + "
-                f"{rule_cf:.3f}(1 - {previous_cf:.3f}) = {combined_cf:.3f}"
+                f"{rule_cf:.3f}(1 - {previous_cf:.3f}) = "
+                f"{combined_cf:.3f}"
             )
 
     return combined_cf, trace

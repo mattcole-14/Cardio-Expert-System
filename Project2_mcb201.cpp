@@ -11,7 +11,7 @@ If more than one rule supports the same conclusion:
     CFcombined = CF1 + CF2 * (1 - CF1)
 
 Compile:
-    g++ -std=c++17 cardiovascular_expert_system.cpp -o cardiovascular_expert_system
+    g++ -std=c++17 Project2_mcb201.cpp -o Project2_mcb201
 
 Run:
     ./cardiovascular_expert_system
@@ -273,94 +273,178 @@ pair<double, vector<string>> backwardChain(
     const FactBase& facts,
     set<string> visited
 ) {
-    vector<Rule> supportingRules;
+    struct EvaluatedRule {
+        const Rule* rule;
+        size_t insertionIndex;
+        bool supported;
+        string failedPremise;
+        vector<string> premiseTrace;
+        double minPremiseCF;
+        double ruleCF;
+    };
 
-    for (const auto& rule : rules) {
-        if (rule.conclusion == goal) {
-            supportingRules.push_back(rule);
+    vector<EvaluatedRule> evaluatedRules;
+
+    // Pre-evaluate all rules that support this goal.
+    for (size_t i = 0; i < rules.size(); ++i) {
+        const Rule& rule = rules[i];
+
+        if (rule.conclusion != goal) {
+            continue;
         }
-    }
-
-    sort(supportingRules.begin(), supportingRules.end(),
-         [](const Rule& a, const Rule& b) {
-             return a.priority > b.priority;
-         });
-
-    if (supportingRules.empty()) {
-        return {0.0, {"No rules support goal: " + goal}};
-    }
-
-    double combinedCF = 0.0;
-    vector<string> trace;
-    trace.push_back("\nGOAL: " + goal);
-
-    for (const auto& rule : supportingRules) {
-        trace.push_back(
-            "\nChecking " + rule.id +
-            " (priority=" + to_string(rule.priority) +
-            ", strength=" + to_string(rule.strength) + ")"
-        );
 
         vector<double> premiseCFs;
+        vector<string> premiseTrace;
         bool supported = true;
+        string failedPremise;
 
         for (const auto& premise : rule.premises) {
             set<string> nextVisited = visited;
             nextVisited.insert(goal);
 
-            auto result = provePremise(premise, facts, nextVisited);
+            auto result = provePremise(
+                premise,
+                facts,
+                nextVisited
+            );
+
             double premiseCF = result.first;
 
             for (const auto& line : result.second) {
-                trace.push_back("  " + line);
+                premiseTrace.push_back("  " + line);
             }
 
             if (premiseCF <= 0.0) {
                 supported = false;
-                trace.push_back(
-                    "  " + rule.id + " cannot fire: " +
-                    premise + " is not supported."
-                );
+                failedPremise = premise;
                 break;
             }
 
             premiseCFs.push_back(premiseCF);
         }
 
-        if (!supported) {
+        double minPremiseCF = 0.0;
+        double ruleCF = 0.0;
+
+        if (supported) {
+            minPremiseCF = *min_element(
+                premiseCFs.begin(),
+                premiseCFs.end()
+            );
+
+            ruleCF = minPremiseCF * rule.strength;
+        }
+
+        evaluatedRules.push_back({
+            &rule,
+            i,
+            supported,
+            failedPremise,
+            premiseTrace,
+            minPremiseCF,
+            ruleCF
+        });
+    }
+
+    if (evaluatedRules.empty()) {
+        return {
+            0.0,
+            {"No rules support goal: " + goal}
+        };
+    }
+
+    // Required tie-breaking:
+    // 1. Highest priority
+    // 2. Highest computed rule CF
+    // 3. Rule insertion order
+    // 4. Lexicographical rule ID
+    sort(
+        evaluatedRules.begin(),
+        evaluatedRules.end(),
+        [](const EvaluatedRule& a, const EvaluatedRule& b) {
+            if (a.rule->priority != b.rule->priority) {
+                return a.rule->priority > b.rule->priority;
+            }
+
+            if (a.ruleCF != b.ruleCF) {
+                return a.ruleCF > b.ruleCF;
+            }
+
+            if (a.insertionIndex != b.insertionIndex) {
+                return a.insertionIndex < b.insertionIndex;
+            }
+
+            return a.rule->id < b.rule->id;
+        }
+    );
+
+    double combinedCF = 0.0;
+    vector<string> trace;
+
+    trace.push_back("\nGOAL: " + goal);
+
+    for (const auto& evaluated : evaluatedRules) {
+        const Rule& rule = *evaluated.rule;
+
+        trace.push_back(
+            "\nChecking " + rule.id +
+            " (priority=" + to_string(rule.priority) +
+            ", strength=" + to_string(rule.strength) + ")"
+        );
+
+        for (const auto& line : evaluated.premiseTrace) {
+            trace.push_back(line);
+        }
+
+        if (!evaluated.supported) {
+            trace.push_back(
+                "  " + rule.id +
+                " cannot fire: " +
+                evaluated.failedPremise +
+                " is not supported."
+            );
+
             continue;
         }
 
-        double minPremiseCF = *min_element(
-            premiseCFs.begin(), premiseCFs.end()
-        );
-
-        double ruleCF = minPremiseCF * rule.strength;
-
         trace.push_back(
-            "  min(premise CFs) = " + to_string(minPremiseCF)
+            "  min(premise CFs) = " +
+            to_string(evaluated.minPremiseCF)
         );
 
         trace.push_back(
-            "  " + rule.id + " conclusion CF = " +
-            to_string(minPremiseCF) + " x " +
-            to_string(rule.strength) + " = " +
-            to_string(ruleCF)
+            "  " + rule.id +
+            " conclusion CF = " +
+            to_string(evaluated.minPremiseCF) +
+            " x " +
+            to_string(rule.strength) +
+            " = " +
+            to_string(evaluated.ruleCF)
         );
 
         double previousCF = combinedCF;
-        combinedCF = combineCF(combinedCF, ruleCF);
+
+        combinedCF = combineCF(
+            combinedCF,
+            evaluated.ruleCF
+        );
 
         if (previousCF == 0.0) {
             trace.push_back(
-                "  Combined CF = " + to_string(combinedCF)
+                "  Combined CF = " +
+                to_string(combinedCF)
             );
-        } else {
+        }
+        else {
             trace.push_back(
-                "  Combined CF = " + to_string(previousCF) +
-                " + " + to_string(ruleCF) +
-                "(1 - " + to_string(previousCF) +
-                ") = " + to_string(combinedCF)
+                "  Combined CF = " +
+                to_string(previousCF) +
+                " + " +
+                to_string(evaluated.ruleCF) +
+                "(1 - " +
+                to_string(previousCF) +
+                ") = " +
+                to_string(combinedCF)
             );
         }
     }
